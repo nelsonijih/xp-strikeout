@@ -1,0 +1,158 @@
+project:
+  name: XP StrikeOut
+  brand: XP Arena
+  subtitle: Every takedown pays. Last player standing wins extra.
+  type: mobile_browser_2d_multiplayer_arena_shooter
+  platform: mobile_web_first
+  crypto: false
+  nft: false
+
+game:
+  mode_name: StrikeOut Rush
+  map_name: Strike Zone
+  genre: 2D top-down multiplayer arena shooter
+  match_style: free_for_all
+  camera: top_down_follow_player
+  session_length_minutes: 5
+  players:
+    min_recommended: 6
+    max: 20
+  lives_per_player: 3
+  player_stats:
+    health: 100
+    weapon: Standard Blaster
+    ammo: unlimited
+    damage_per_hit: 25
+    hits_to_eliminate: 4
+  controls:
+    mobile:
+      left_joystick: movement
+      right_joystick: aim_direction
+      fire: auto_fire_when_aiming
+    desktop_testing:
+      movement: WASD_or_arrow_keys
+      aim: mouse
+      shoot: left_click
+  power_ups:
+    - name: Health Boost
+      effect: restores_40_hp
+    - name: Speed Boost
+      effect: temporary_speed_increase
+      duration_seconds: 5
+    - name: Shield
+      effect: blocks_first_incoming_hit
+      duration_seconds: 8
+
+business_model:
+  entry_fee_naira: 2000
+  pool_split:
+    xp_arena_platform_fee_percent: 20
+    takedown_payout_pool_percent: 70
+    last_player_standing_prize_percent: 10
+  payout_formula:
+    gross_pool: total_paid_players * 2000
+    takedown_value: takedown_pool / total_verified_takedowns
+    player_total_payout: player_takedowns * takedown_value + survival_prize_if_last_standing
+
+technical_stack:
+  frontend:
+    framework: Next.js
+    ui: React
+    styling: Tailwind CSS
+    hosting: Vercel
+  game_client:
+    engine: Phaser
+    target: browser
+  multiplayer_server:
+    runtime: Node.js
+    framework: Colyseus
+    hosting_options:
+      - Render
+      - Fly.io
+  database_auth_storage:
+    provider: Supabase
+    database: Postgres
+  monitoring:
+    analytics: Google Analytics
+    errors: Sentry
+
+server_authority:
+  client_must_not_decide:
+    - player_position
+    - projectile_hits
+    - damage
+    - takedowns
+    - survival_winner
+    - payout
+    - final_leaderboard
+  server_controls:
+    - movement_validation
+    - projectile_creation
+    - projectile_collision
+    - health_and_lives
+    - takedown_confirmation
+    - match_timer
+    - score
+    - result_finalization
+
+mvp_scope:
+  must_have:
+    - landing_page
+    - auth_profile
+    - match_lobby
+    - 2d_arena_map
+    - mobile_controls
+    - multiplayer_room
+    - player_movement
+    - shooting_projectiles
+    - health_lives
+    - takedown_tracking
+    - final_leaderboard
+    - payout_calculation
+    - admin_match_control
+    - server_side_result_validation
+  should_have:
+    - power_ups
+    - spectator_mode
+    - suspicious_activity_flags
+    - player_match_history
+    - payout_status
+  not_in_mvp:
+    - native_mobile_app
+    - crypto
+    - nft
+    - multiple_maps
+    - multiple_weapons
+    - skins
+    - clans
+    - chat
+    - ranked_matchmaking
+    - automated_bank_payouts
+    - ai_bots
+
+anti_cheat_flags:
+  - impossible_movement_speed
+  - impossible_fire_rate
+  - repeated_same_player_farming
+  - abnormal_takedown_rate
+  - disconnect_reconnect_abuse
+  - multiple_accounts_same_device_or_ip
+  - idle_player_repeatedly_eliminated
+  - collusion_patterns
+
+routes:
+  landing: /xp-strikeout
+  play: /xp-strikeout/play
+  leaderboard: /xp-strikeout/leaderboard
+  admin: /admin/xp-strikeout
+
+definition_of_done:
+  - 10_to_20_players_can_join_one_match
+  - match_starts_and_ends_correctly
+  - server_confirms_all_takedowns
+  - final_payout_calculation_is_accurate
+  - results_save_to_supabase
+  - admin_can_review_and_approve_payouts
+  - players_can_see_final_results
+  - suspicious_activity_can_be_flagged
+  - match_is_stable_on_common_android_phones
