@@ -1,0 +1,50 @@
+# XP StrikeOut — backend API (api.xparena.net)
+# Co-located with the game server in Johannesburg (jnb) so auth/join/results stay
+# fast for NG players and near the realtime server. Hosts Paystack webhooks too
+# (always-on; avoids serverless cold-start + webhook-retry pain).
+#
+#   fly deploy -c infra/fly.api.toml
+#   fly secrets set JOIN_TICKET_SECRET=... REDIS_URL=... \
+#       SUPABASE_SERVICE_ROLE_KEY=... PAYSTACK_SECRET_KEY=... PAYSTACK_WEBHOOK_SECRET=... \
+#       -a xp-strikeout-api
+
+app            = "xp-strikeout-api"
+primary_region = "jnb"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT     = "8080"
+  JOIN_TICKET_TTL_SECONDS  = "60"
+  JOIN_TICKET_SKEW_SECONDS = "30"
+  # secrets via `fly secrets set` (shares JOIN_TICKET_SECRET with the game app)
+
+[http_service]
+  internal_port        = 8080
+  force_https          = true
+  auto_stop_machines   = false   # webhooks must always have a live target
+  auto_start_machines  = true
+  min_machines_running  = 1
+
+  [http_service.concurrency]
+    type       = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+[[http_service.checks]]
+  interval = "15s"
+  timeout  = "2s"
+  method   = "get"
+  path     = "/health"
+
+[deploy]
+  strategy = "rolling"           # stateless API; rolling is fine (no live match state)
+
+kill_signal  = "SIGTERM"
+kill_timeout = "30s"             # drain in-flight HTTP only
+
+[[vm]]
+  size   = "shared-cpu-1x"
+  memory = "512mb"

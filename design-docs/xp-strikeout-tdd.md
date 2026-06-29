@@ -67,9 +67,9 @@ Used for users, profiles, tournaments, matches, match results, payout records, a
 
 ### User Flow
 
-1. User visits `xparena.net/xp-strikeout`
-2. User signs up or logs in
-3. User creates gamer tag
+1. User visits `xparena.net/strikeout` (marketing) and taps the game title
+2. User lands on `play.xparena.net/strikeout`; if no session, signs in with **Google** (Supabase Auth, PKCE redirect — see `xp-strikeout-architecture.md` §6)
+3. First-time users pick a gamer tag (onboarding); returning users skip straight to the lobby
 4. User joins available match
 5. User pays ₦2,000 entry fee
 6. User enters match lobby
@@ -80,25 +80,52 @@ Used for users, profiles, tournaments, matches, match results, payout records, a
 11. Player sees payout estimate
 12. Admin reviews and approves payout
 
+### Subdomain Topology
+
+> Nigerian-first / mobile-first. Full rationale in `xp-strikeout-architecture.md`.
+> The realtime server is hosted as close to Lagos as managed hosting allows (**Fly.io Johannesburg `jnb`**); the database lives in Europe but is kept off the gameplay hot path.
+
+| Subdomain | Purpose | Stack | Host / Region | Auth |
+|-----------|---------|-------|---------------|------|
+| `xparena.net/strikeout` | Marketing, SEO, rules, trust | Next.js SSG/ISR | Vercel (global CDN) | public |
+| `play.xparena.net/strikeout` | Game app (lobby + Phaser client) | Next.js + React + Phaser | Vercel | Supabase JWT |
+| `game.xparena.net` | Realtime game server (WebSocket) | Node + Colyseus | Fly.io `jnb` | signed join ticket |
+| `api.xparena.net` | Matchmaking, payments, results, payouts | Node/Fastify | Fly.io `jnb` (co-located) | Supabase JWT / service role |
+| `admin.xparena.net` | Internal admin & payout review | Next.js | Vercel | admin role + IP allowlist |
+
 ### System Flow
 
 ```text
-Next.js App
-  ↓
-Supabase Auth / Database
-  ↓
-Payment Confirmation
-  ↓
-Colyseus Match Server
-  ↓
-Server-Side Game Simulation
-  ↓
-Final Results
-  ↓
-Supabase Match Results + Payout Records
-  ↓
-Admin Review / Export
+                         ┌─────────────────────────────┐
+   Android / Chrome      │   Vercel CDN (global edge)   │
+   (Lagos, mobile data)  │  xparena.net/strikeout (SSG) │
+        │                │  play.xparena.net (app+Phaser)│
+        │  HTTPS (static, app shell, PWA)                │
+        │                └─────────────────────────────┘
+        │
+        │  REST (auth, join, pay, results)        WebSocket (binary, 10–30 Hz)
+        ▼                                              ▼
+ ┌───────────────────────┐                  ┌───────────────────────────┐
+ │  api.xparena.net       │  signed ticket   │  game.xparena.net          │
+ │  Node/Fastify          │ ───────────────► │  Colyseus rooms (Fly jnb)  │
+ │  (Fly jnb)             │                  │  server-authoritative sim  │
+ └─────────┬──────────────┘                  └─────────────┬─────────────┘
+           │                                                │ results at match end only
+           │ matchmaking/presence/rate-limit                ▼
+           ▼                                   ┌───────────────────────────┐
+ ┌───────────────────┐                         │  Supabase Postgres (EU)   │
+ │  Redis (Upstash)  │ ◄───────────────────────┤  users, matches, results, │
+ │  presence, tickets│                         │  payments, payouts, audit │
+ └───────────────────┘                         └─────────────┬─────────────┘
+                                                              │
+   ┌──────────────────────┐                                  │ webhooks
+   │  Paystack (NG)        │ ◄────────────── api ─────────────┘
+   │  charge + transfers   │
+   └──────────────────────┘
+                                       admin.xparena.net (Vercel) ──► api/Supabase
 ```
+
+**Key property:** the in-match simulation runs entirely in memory in `jnb`. The EU database latency never touches gameplay — the only cross-region hop is the single results write at match end.
 
 ## 5. Core Technical Principle
 
@@ -320,12 +347,19 @@ If players disconnect:
 
 ### users
 
+`id` equals the Supabase `auth.users` id (`auth.uid()`); row is auto-provisioned on first Google sign-in via a trigger. See `xp-strikeout-architecture.md` §13.
+
 ```sql
-id uuid primary key
+id uuid primary key      -- = auth.uid()
 name text
-phone text
+phone text               -- nullable; collected later at payout/KYC, not at signup
 email text
-role text
+email_verified boolean default false
+provider text            -- 'google' (future: 'apple','email')
+provider_sub text        -- Google `sub`, stable per-account id
+avatar_url text
+role text                -- 'player' | 'admin'
+last_login_at timestamp
 created_at timestamp
 ```
 
@@ -747,3 +781,116 @@ MVP settings:
 - admin payout approval
 
 This gives XP Arena the simplest technical foundation to test whether players understand, trust, and replay the XP StrikeOut format.
+
+---
+
+# Appendix A — Gaps, Risks & Backlog
+
+> Open risks and not-yet-specified areas, prioritised. Architecture-level items (auth, join ticket, netcode, regions) are already designed in `xp-strikeout-architecture.md`; this appendix tracks what remains.
+>
+> **Priority:** 🔴 P0 blocker · 🟠 P1 high · 🟡 P2 medium.
+
+## A.1 Legal, compliance & trust 🔴 P0
+
+Real money is pooled and redistributed minus a house cut → assessed as gaming/betting regardless of skill element.
+
+| # | Gap | Action |
+|---|-----|--------|
+| 1.1 | No regulatory position | Legal opinion on skill-gaming vs betting under NG federal (NLRC) + state (e.g. Lagos LSLGA) rules **before** payout code; document licensing path. |
+| 1.2 | No age gate | Hard 18+ gate at signup; store `date_of_birth`, block under-18. |
+| 1.3 | No KYC/AML | Identity verification before *payout* (BVN/phone match common in NG). Also the strongest anti-multi-account defense. |
+| 1.4 | No responsible-gaming controls | Daily entry/loss cap, self-exclusion flag, cool-down. |
+| 1.5 | No tax handling | Decide withholding on winnings + platform tax; keep records. |
+
+```sql
+-- users (add)
+date_of_birth date
+kyc_status text         -- unverified | pending | verified | rejected
+kyc_reference text
+self_excluded_until timestamp
+
+-- new table: responsible_gaming_limits
+id uuid primary key
+user_id uuid
+daily_entry_limit_naira numeric
+daily_loss_limit_naira numeric
+updated_at timestamp
+```
+
+## A.2 Payment, refund & payout correctness 🔴 P0
+
+The `payments` / `payout_records` tables exist but flow, edge cases, and money math are undefined.
+
+- **Capture:** Paystack (primary). Charge **at join into an escrow/holding state**, consumed only when the match starts. Idempotent on `provider_reference`.
+- **Refund / void policy:**
+
+| Scenario | Policy |
+|----------|--------|
+| Match never reaches min players | Full auto-refund, void |
+| Server crash before `active` | Full auto-refund |
+| Server crash mid-match | Void + refund |
+| `total_verified_takedowns = 0` | Void + replay; auto-refund if not replayed |
+| Paid but client failed to join | Auto-refund that player |
+| Voluntary disconnect | No refund |
+
+- **Payout rounding:** `payout_per_takedown = takedown_pool ÷ total_verified_takedowns` rarely divides evenly. Round **down** to ₦1; remainder rolls into platform fee (or survival winner — pick one). Invariant: `sum(payouts) + platform_fee + remainder == gross_pool` exactly.
+- **Disconnect & denominator:** a disconnected player's verified takedowns **still count** and remain payable (pending KYC).
+- **Integrity:** compute results **once** at `results_locked`; all payout writes in a single DB transaction; `numeric`, never floats.
+
+## A.3 Anti-cheat depth 🟠 P1
+
+The flag list is a list, not a system.
+- **Protocol-level bots:** Phaser client is inspectable JS; a headless client can send *legal* inputs to Colyseus. Server-authority doesn't stop input-level aimbots → add input-rate sanity, aim-snap/pattern detection, reaction-time outlier analysis.
+- **Fingerprint weakness:** browser fingerprinting is defeated by incognito/VPN → a *signal*, not a gate; pair with KYC (A.1.3).
+- **Thresholds:** every flag needs concrete numbers + severity:
+
+```yaml
+anti_cheat_thresholds:
+  impossible_movement_speed: { max_units_per_sec: <MAX>, severity: high }
+  impossible_fire_rate:      { min_cooldown_ms: <CD>,   severity: high }
+  abnormal_takedown_rate:    { max_per_minute: <N>,     severity: medium }
+  same_player_farming:       { max_repeat_takedowns_same_victim: <N>, severity: medium }
+  reaction_time_outlier:     { min_human_ms: 120,       severity: medium }
+```
+
+## A.4 Liquidity & lobby filling 🟠 P1
+
+Needs 6–20 paying players online at once — empty lobbies are the #1 killer of real-money skill games.
+- **Scheduled match windows** (e.g. every 15 min) + notify when a lobby is filling, vs always-on empty rooms.
+- Explicit **under-fill behavior**: fill timeout → start at current count or void + refund (A.2).
+- Reconcile min-player count (see A.8).
+
+## A.5 New-player experience & fairness 🟠 P1
+
+- **Free/practice mode.** Paying ₦2,000 before feeling the controls = instant churn. Add a free practice arena vs internal test bots (also needed for A.7). Contradicts "no AI bots in MVP" → allow **internal/practice bots only**, never in paid matches.
+- **Shark-vs-minnow.** No SBMM → skilled players farm newcomers; most in a 20-player FFA get 0–2 takedowns and leave net-negative. Mitigate: a **low-stakes tier** (₦200–₦500) + an honest "average win rate" stat. Flag SBMM as a fast-follow.
+
+## A.6 Gameplay tuning tension 🟡 P2
+
+- **Timer vs survival.** 3 lives × 20 players = 60 lives; most 5-min matches end on the **timer**, so the survival prize goes to the tiebreaker "most remaining lives" — which **rewards camping**, contradicting "no hiding forever." Consider shrinking play-area / sudden-death in the final minute, or an aggression-rewarding tiebreaker.
+- **Spectator ghosting.** Eliminated players free-looking live players can relay positions over a call (collusion) → delayed/fogged or self-only spectate.
+- **Payout dilution.** `value = pool / total_takedowns` dilutes as kills rise — model against multi-account feeder strategies before launch (A.7 economics).
+
+## A.7 Testing, economics & retention 🟡 P2
+
+- **Testing:** DoD wants stable 20-player matches but bans AI bots — you cannot load-test 20 WS clients without simulated clients. Add **internal headless test bots** as a build dependency (doubles as practice opponent, A.5).
+- **Unit economics:** 20% gross is eaten by Paystack in-fees (~1.5%), per-payout transfer fees, server/Supabase/Sentry, fraud, manual payout labor → under-filled matches can go negative. Build a per-match P&L model; run player-EV/feeder-exploit math (avg return ~80% of entry; bottom ~80% net-negative).
+- **Retention:** only loop is "win money or churn." Add match history (already should-have ✓), progression/levels, daily reward, referrals.
+
+## A.8 Doc consistency 🟡 P2
+
+| Field | GDD | TDD | Action |
+|-------|-----|-----|--------|
+| Session length | 3–5 min | 3–5 min | Pick one (spec.yaml was 5 min) |
+| Min players | — | "6–10" | Pick one (was `min_recommended: 6`) |
+| AI bots | not needed | not included | Allow *internal* bots (A.5/A.7) |
+
+*Consistent:* 25 dmg × 4 hits = 100 HP ✓; pool split 20/70/10 ✓.
+
+## A.9 Sequencing
+
+1. 🔴 A.1 Legal + A.2 Money correctness — before payout code.
+2. 🟠 A.3 Anti-cheat thresholds (netcode/auth already in architecture).
+3. 🟠 A.5 Practice mode + A.7 test bots — onboarding + testability (shared work).
+4. 🟠 A.4 Liquidity plan.
+5. 🟡 A.6 tuning, A.7 economics/retention — after first controlled test.

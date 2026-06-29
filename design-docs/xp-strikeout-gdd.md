@@ -252,8 +252,8 @@ Flagged matches should require admin review before payout.
 ### Player Screens
 
 1. Landing page
-2. Signup/login
-3. Player profile/gamer tag
+2. Sign in with Google (single tap; no email/password in MVP)
+3. Player profile/gamer tag (first-time onboarding)
 4. Match lobby
 5. Game screen
 6. Match result screen

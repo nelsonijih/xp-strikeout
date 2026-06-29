@@ -1,0 +1,68 @@
+# XP StrikeOut — Colyseus realtime game server (game.xparena.net)
+# Hosted in Johannesburg (jnb) — closest managed region to Lagos.
+# Run real-handset RTT tests (MTN/Glo/Airtel/9mobile) before locking the region.
+#
+#   fly deploy -c infra/fly.game.toml
+#   fly secrets set JOIN_TICKET_SECRET=... REDIS_URL=... SUPABASE_SERVICE_ROLE_KEY=... -a xp-strikeout-game
+
+app            = "xp-strikeout-game"
+primary_region = "jnb"          # Johannesburg
+
+[build]
+  # builder/dockerfile defined in the game-server repo
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV   = "production"
+  PORT       = "2567"           # Colyseus default
+  FLY_REGION = "jnb"
+  # secrets (JOIN_TICKET_SECRET, REDIS_URL, SUPABASE_SERVICE_ROLE_KEY) via `fly secrets set`
+
+[http_service]
+  internal_port       = 2567
+  force_https         = true
+  auto_stop_machines  = false   # NEVER auto-stop: a stopped machine kills live matches
+  auto_start_machines = true
+  min_machines_running = 1      # always keep one warm (no cold-start mid-evening)
+
+  # WebSockets: connections are long-lived and sticky per machine by nature.
+  [http_service.concurrency]
+    type       = "connections"
+    soft_limit = 220            # ~ rooms*players headroom; tune from load tests
+    hard_limit = 260
+
+# --- Health checks -----------------------------------------------------------
+# /health returns 200 only when the process is up AND not draining.
+[[http_service.checks]]
+  interval = "10s"
+  timeout  = "2s"
+  method   = "get"
+  path     = "/health"
+  grace_period = "10s"
+
+# --- Graceful shutdown / drain ----------------------------------------------
+# On deploy/restart, Fly sends SIGTERM. The server must:
+#   1. flip /health to 503 (stop receiving NEW rooms via the matchmaker),
+#   2. let ACTIVE matches finish (matches are <=5 min),
+#   3. then exit.
+# kill_timeout must exceed max match length + results flush.
+[deploy]
+  strategy = "bluegreen"        # stand up new machines before draining old
+
+[experimental]
+  # give a finishing match time to complete before the machine is killed
+  # (5-min match + buffer). Fly caps this; 600s is the practical max.
+  # If your fly version uses the top-level form, set: kill_timeout = "600s"
+
+kill_signal  = "SIGTERM"
+kill_timeout = "600s"           # 10 min: longest match (5m) + drain + results write
+
+# --- Machine sizing ----------------------------------------------------------
+[[vm]]
+  size   = "shared-cpu-2x"      # start here; realtime sim is CPU-light at MVP scale
+  memory = "1gb"
+
+# Scaling note:
+#   One machine hosts many 20-player rooms. To add a second machine, enable the
+#   Colyseus Redis presence/driver so matchmaking stays correct across machines,
+#   then `fly scale count 2 --region jnb`. Keep all machines in jnb for MVP.
