@@ -12,7 +12,7 @@ Players pay an entry fee, join a short match, earn payouts from verified takedow
 
 ## 2. MVP Technical Goal
 
-Build a stable, mobile-first multiplayer game that supports:
+Build a stable, **mobile-browser-first** multiplayer game (no native app in MVP — deferred until traction; see architecture *Platform & roadmap*) that supports:
 
 - 10–20 players per match
 - 3–5 minute rounds
@@ -82,7 +82,7 @@ Used for users, profiles, tournaments, matches, match results, payout records, a
 
 ### Subdomain Topology
 
-> Nigerian-first / mobile-first. Full rationale in `xp-strikeout-architecture.md`.
+> Nigerian-first / mobile-browser-first. Full rationale in `xp-strikeout-architecture.md`.
 > The realtime server is hosted as close to Lagos as managed hosting allows (**Fly.io Johannesburg `jnb`**); the database lives in Europe but is kept off the gameplay hot path.
 
 | Subdomain | Purpose | Stack | Host / Region | Auth |

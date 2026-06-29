@@ -15,7 +15,7 @@ Players enter short multiplayer matches, move around a small arena, shoot projec
 - **Game Title:** XP StrikeOut
 - **Brand:** by XP Arena
 - **Genre:** 2D top-down multiplayer arena shooter
-- **Platform:** Mobile web first
+- **Platform:** Mobile web (browser) first — native app deferred until the MVP proves traction; players use the mobile browser for now
 - **Session Length:** 3–5 minutes
 - **Players Per Match:** 10–20 players
 - **Camera:** Top-down camera following player

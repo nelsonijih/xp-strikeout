@@ -1,4 +1,4 @@
-# XP StrikeOut — Technical Architecture (Nigerian-first, Mobile-first)
+# XP StrikeOut — Technical Architecture (Nigerian-first, Mobile-browser-first)
 
 > **Owner:** Principal Engineer / Architect.
 > **Scope:** The single source of truth for system topology, hosting/region strategy, service boundaries, authentication, room admission, the realtime game path, payments, and ops.
@@ -16,7 +16,7 @@
 8. Match lifecycle across services
 9. Join ticket — room admission
 10. Realtime server design
-11. Mobile-first client engineering
+11. Mobile-browser client engineering
 12. Payments & payouts
 13. Auth/identity data model
 14. Environment / config
@@ -31,8 +31,10 @@
 2. **Keep the hot loop off the database.** Supabase lives in Europe; the game server must never block on it mid-match. DB is touched at match *end* only.
 3. **Spend bytes like they cost money — because they do.** Binary state, delta updates, small asset bundles. Nigerian mobile data is expensive and capped.
 4. **Assume the connection drops.** Reconnect-into-match is a first-class feature, not an edge case.
-5. **Mobile web, not app store.** PWA + add-to-home-screen avoids large downloads and store friction.
+5. **Mobile browser first — no native app for MVP.** Players play in the mobile browser (PWA + add-to-home-screen, no app-store download/approval friction). A native app is **deferred until the MVP proves traction** (see *Platform & roadmap* below); the architecture is kept client-agnostic so a later native app can reuse the same API, WebSocket protocol, and Supabase backend.
 6. **One identity, two credentials.** A Supabase JWT proves *who you are*; a single-use join ticket proves *you paid for this match*. The game server only ever trusts the latter.
+
+**Platform & roadmap.** MVP target is the **mobile web browser on Android** (Chrome), playable at `play.xparena.net`. Desktop browser works for internal testing/admin. **Native iOS/Android apps are explicitly post-MVP** — built only after traction, and deliberately not on the critical path now. Nothing in this design forecloses them: the realtime path (Colyseus WebSocket), the REST API, and Supabase (Auth + Postgres) all have first-class mobile-native SDKs, so a future app is a new client over the same backend, not a re-platform.
 
 ---
 
@@ -72,7 +74,38 @@ Lagos → US East                    ~ 150–250 ms  (do NOT host realtime here)
 
 > **Action (do first):** run a 1-day RTT/packet-loss test from real NG handsets on MTN, Glo, Airtel, and 9mobile to `jnb` vs `lhr`. Pick the winner by the *median*, not the best case. Half a day of work that de-risks the entire product.
 
+**Hosting decision — MVP is single-region Fly `jnb` (managed); NG-local is a Phase-2 trigger, not a plan.**
+
+For the MVP the realtime server runs on **Fly.io `jnb` (Johannesburg), single region, no failover standby.** Rationale:
+
+- The MVP exists to prove *traction* (do players pay, enjoy, return?), which is a product question — not a latency-benchmark question. "Good enough + stable" beats "lowest possible RTT."
+- This is a 2D top-down shooter, not a 128-tick FPS. With our netcode — client prediction, ~100 ms interpolation buffer, and bounded server-side lag compensation (§10) — ~60–100 ms to `jnb` is very playable; the lag comp exists precisely to make high-ping shots register fairly.
+- Self-hosting in Nigeria (even a rented VM in a Lagos data center) front-loads power, redundant-uplink, DDoS, single-point-of-failure, and ops burden at the stage with the least money and focus.
+- **Deferring is nearly free:** the Colyseus server is containerized and the rest of the system (Vercel, Supabase) is location-agnostic, so moving it to a Lagos box later is a redeploy + DNS change, not a re-architecture.
+
+**Phase 2 — move the realtime server to a Lagos data center (colo or rented VM) only when *all three* hold:**
+1. **Traction is proven** (the MVP cleared its success criteria).
+2. **Measured latency pain** — player complaints *plus* p50/p95 RTT/jitter telemetry (§15) showing `jnb` is the actual bottleneck.
+3. **Scale/cost/data-residency case** — egress or capacity at volume, or KYC/regulatory data-residency once the legal track (A.1) is underway.
+
+When that happens, prefer a **Tier-III carrier-neutral Lagos DC peered at IXPN** (e.g. Rack Centre, Equinix LG1/MDXi) over literal on-prem — same NG-local latency and control, but the DC supplies redundant power/cooling/uplinks, physical security, and DDoS scrubbing. The latency win is **conditional on IXPN peering with the major carriers**; verify with `traceroute` (path must stay in-country) before committing. Optionally keep Fly `jnb` as a failover standby the matchmaker can route to. Until those triggers fire, this stays a documented option, not built.
+
+> **MVP instrumentation hedge:** ship p50/p95 RTT-per-carrier metrics (§15) from day one so the Phase-2 decision is driven by data, not a guess. If `jnb` numbers come back strong, the Lagos box may never be needed.
+
 **Consequence of the split (game in JNB, DB in London):** ~150 ms between game server and Supabase. Fine, **because we never write to the DB during a match** — only at `results_locked` (see §8).
+
+**Why Supabase (stack decision).** Supabase = managed **Postgres + Auth + Storage + RLS** in one service. Reasons it's the right fit here, and the alternatives weighed:
+
+- **Postgres, because this is a money product.** Payouts demand ACID transactions, `numeric` money types, and a single-transaction "write all results at `results_locked`" guarantee (§8, A.2). A relational schema (users ↔ matches ↔ match_players ↔ payments ↔ payouts) is exactly our shape, and admin/payout reporting is plain SQL.
+- **Auth is bundled and gives us Google OAuth out of the box** (§6) — issuing the very JWT we already chain into the API and join tickets. We don't build OAuth, session handling, JWT minting, or refresh rotation ourselves.
+- **RLS** enforces "users see only their own rows" declaratively; admin/payout tables stay service-role only.
+- **Small-team leverage:** one managed vendor for DB+Auth+Storage(avatars), generous low-cost tier — right for an MVP that must run cheap.
+- **Low lock-in:** it's *standard Postgres* underneath — migratable to Neon/RDS/self-hosted later. Auth is the stickier piece, but Google identities are portable.
+- **Doesn't block the future native app:** Supabase has first-class mobile SDKs.
+
+**Alternatives rejected:** *Firebase/Firestore* — NoSQL is a poor fit for transactional payout math and SQL payout reporting. *Roll-your-own Postgres + Auth.js/Clerk* — more infra to build/run, or a second paid auth vendor, for no MVP benefit. *Plain Postgres only* — we'd still have to build auth; Supabase *is* Postgres plus that.
+
+> The realtime hot path does **not** use Supabase — the Colyseus server keeps match state in memory and only the API touches Postgres (reads for matchmaking/results, one write at match end). So Supabase's EU location never affects gameplay latency.
 
 ---
 
@@ -281,9 +314,9 @@ Steps 1–5 are signature/claim checks (no I/O); step 6 (Redis `DEL`) is the onl
 
 ---
 
-## 11. Mobile-first client engineering (Nigerian devices)
+## 11. Mobile-browser client engineering (Nigerian devices)
 
-Targeting mid/low-end Android + Chrome on metered data.
+Targeting mid/low-end Android + **Chrome mobile browser** on metered data (no native app in MVP).
 
 **Performance** — object-pool projectiles; cap particles; texture atlases; avoid per-frame allocations. Design for **30 fps on low-end**, 60 where available; cap pixel ratio. Landscape-locked canvas at a fixed logical resolution.
 
