@@ -42,13 +42,26 @@
 
 | Subdomain | Purpose | Stack | Host / Region | Auth |
 |-----------|---------|-------|---------------|------|
-| `xparena.net/strikeout` | Marketing, SEO, rules, trust | Next.js **SSG/ISR** | Vercel (global CDN) | public |
-| `play.xparena.net/strikeout` | The game app (lobby + Phaser client) | Next.js + React + Phaser | Vercel | Supabase JWT (Google) |
+| `xparena.net/games` + `/games/strikeout` | Marketing catalog + per-title landing (SEO, rules, trust) | Next.js **SSG/ISR** | Vercel (global CDN) | public |
+| `play.xparena.net` + `/strikeout` | Authenticated launcher hub + the game app (lobby + Phaser client) | Next.js + React + Phaser | Vercel | Supabase JWT (Google) |
 | `game.xparena.net` | **Realtime game server** (WebSocket) | Node + Colyseus | **Fly.io — `jnb` (Johannesburg)** | signed join ticket |
 | `api.xparena.net` | Backend API: matchmaking, payments, results, payouts | Node/Fastify | Fly.io `jnb` (co-located) | Supabase JWT / service role |
 | `admin.xparena.net` | Internal admin & payout review | Next.js | Vercel | admin role + IP allowlist |
 
 **Why split `play` from `xparena.net`:** the marketing site is cache-everything static (great Core Web Vitals, SEO); the app is authenticated, JS-heavy, and ships the Phaser bundle. Different caching, deploy cadence, and bundle budgets — keep them apart.
+
+**Route scheme (XP Arena is multi-game; StrikeOut is one title):**
+
+```
+xparena.net (public marketing, anonymous)        play.xparena.net (authenticated app)
+  /games                 catalog index (SEO)        /                 launcher hub: title tiles  ← entry point
+  /games/strikeout       StrikeOut landing + Play    /strikeout        lobby → gameplay → results
+  /about, /how-it-works                              /strikeout/leaderboard
+                                                     /onboarding, /auth/callback
+```
+- **Marketing namespaces under `/games`** — gives a catalog index page and keeps brand pages clean as titles are added.
+- **Play stays flat** (`/strikeout`, not `/games/strikeout`) — the subdomain already means "play," so the prefix would be redundant.
+- A "Play" tap from `xparena.net/games/strikeout` deep-links to `play.xparena.net/strikeout`; if there's no session the Google gate fires first and returns the user to `/strikeout` (§6).
 
 ---
 
@@ -114,7 +127,7 @@ When that happens, prefer a **Tier-III carrier-neutral Lagos DC peered at IXPN**
 ```text
                          ┌─────────────────────────────┐
    Android / Chrome      │   Vercel CDN (global edge)   │
-   (Lagos, mobile data)  │  xparena.net/strikeout (SSG) │
+   (Lagos, mobile data)  │  xparena.net/games (SSG)     │
         │                │  play.xparena.net (app+Phaser)│
         │  HTTPS (static, app shell, PWA)                │
         │                └─────────────────────────────┘
@@ -146,10 +159,11 @@ When that happens, prefer a **Tier-III carrier-neutral Lagos DC peered at IXPN**
 
 ## 5. Service responsibilities
 
-**`xparena.net/strikeout` (marketing)** — static, SEO, "how payouts work," fairness/trust copy. No auth, no game code. SSG/ISR.
+**`xparena.net/games` (marketing)** — static catalog (`/games`) + per-title landing (`/games/strikeout`): SEO, "how payouts work," fairness/trust copy, Play CTA. No auth, no game code. SSG/ISR.
 
 **`play.xparena.net` (app + game client)**
-- **Auth boundary** — clicking a game title triggers Google sign-in if there's no session (§6).
+- **Launcher hub** at `/` — authenticated tiles for the available titles; `/strikeout` is StrikeOut's lobby/gameplay.
+- **Auth boundary** — landing on a title route (e.g. `/strikeout`) with no session triggers Google sign-in, then returns to that title (§6).
 - Lobby, profile, results, leaderboard UI (React).
 - Phaser canvas on a dedicated route, **landscape-locked**.
 - Client prediction + interpolation; renders state, never decides truth.
@@ -188,7 +202,8 @@ When that happens, prefer a **Tier-III carrier-neutral Lagos DC peered at IXPN**
 
 **Flow ("click game title" → in lobby):**
 ```text
-[xparena.net/strikeout] tap "XP StrikeOut" → https://play.xparena.net/strikeout
+[xparena.net/games/strikeout] tap "Play"  → https://play.xparena.net/strikeout
+   (or from the play hub itself: play.xparena.net/ → tap StrikeOut tile)
         │  no session?
         ▼  "Continue with Google"  (signInWithOAuth: provider google, redirectTo /auth/callback,
         │                            prompt=select_account; intended path saved in state/cookie)

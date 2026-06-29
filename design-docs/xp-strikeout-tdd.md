@@ -67,7 +67,7 @@ Used for users, profiles, tournaments, matches, match results, payout records, a
 
 ### User Flow
 
-1. User visits `xparena.net/strikeout` (marketing) and taps the game title
+1. User discovers a title on `xparena.net/games/strikeout` (marketing) and taps **Play** — or opens the authenticated launcher `play.xparena.net/` and taps the StrikeOut tile
 2. User lands on `play.xparena.net/strikeout`; if no session, signs in with **Google** (Supabase Auth, PKCE redirect — see `xp-strikeout-architecture.md` §6)
 3. First-time users pick a gamer tag (onboarding); returning users skip straight to the lobby
 4. User joins available match
@@ -87,8 +87,8 @@ Used for users, profiles, tournaments, matches, match results, payout records, a
 
 | Subdomain | Purpose | Stack | Host / Region | Auth |
 |-----------|---------|-------|---------------|------|
-| `xparena.net/strikeout` | Marketing, SEO, rules, trust | Next.js SSG/ISR | Vercel (global CDN) | public |
-| `play.xparena.net/strikeout` | Game app (lobby + Phaser client) | Next.js + React + Phaser | Vercel | Supabase JWT |
+| `xparena.net/games` + `/games/strikeout` | Marketing catalog + per-title landing | Next.js SSG/ISR | Vercel (global CDN) | public |
+| `play.xparena.net` + `/strikeout` | Launcher hub + game app (lobby + Phaser client) | Next.js + React + Phaser | Vercel | Supabase JWT |
 | `game.xparena.net` | Realtime game server (WebSocket) | Node + Colyseus | Fly.io `jnb` | signed join ticket |
 | `api.xparena.net` | Matchmaking, payments, results, payouts | Node/Fastify | Fly.io `jnb` (co-located) | Supabase JWT / service role |
 | `admin.xparena.net` | Internal admin & payout review | Next.js | Vercel | admin role + IP allowlist |
@@ -98,7 +98,7 @@ Used for users, profiles, tournaments, matches, match results, payout records, a
 ```text
                          ┌─────────────────────────────┐
    Android / Chrome      │   Vercel CDN (global edge)   │
-   (Lagos, mobile data)  │  xparena.net/strikeout (SSG) │
+   (Lagos, mobile data)  │  xparena.net/games (SSG)     │
         │                │  play.xparena.net (app+Phaser)│
         │  HTTPS (static, app shell, PWA)                │
         │                └─────────────────────────────┘
