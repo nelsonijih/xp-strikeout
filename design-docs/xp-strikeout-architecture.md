@@ -334,6 +334,7 @@ Targeting mid/low-end Android + **Chrome mobile browser** on metered data (no na
 - **Charge:** init from `api`, confirm via **webhook** (idempotent on `provider_reference`). Never trust client-side "payment success."
 - **Payout:** **Paystack Transfers API** to NUBAN accounts. MVP = admin-approved manual trigger; automate after trust is established.
 - Webhook endpoint on the always-on `api` service (not serverless) for retry reliability.
+- **Entry is reserved per match seat, consumed only at match start.** A paid entry whose seat is never *consumed* (match didn't start with that player) is returned, not kept. **MVP returns to source (refund); no wallet.** Entry-only (non-withdrawable) credit is a post-MVP fast-follow; a withdrawable wallet is deferred (CBN e-money licensing). Full state machine + scenario table in **TDD Appendix A.2**.
 
 ---
 

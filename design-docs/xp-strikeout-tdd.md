@@ -821,17 +821,35 @@ updated_at timestamp
 
 The `payments` / `payout_records` tables exist but flow, edge cases, and money math are undefined.
 
-- **Capture:** Paystack (primary). Charge **at join into an escrow/holding state**, consumed only when the match starts. Idempotent on `provider_reference`.
+- **Capture:** Paystack (primary). Charge **at join, reserved for a specific match seat**, consumed only when the match goes `active`. Idempotent on `provider_reference`.
+
+**The dividing line — was the match seat *consumed*?** A seat is consumed only when the match goes `active` with the player allocated to it. Money is returned for **unconsumed** entries and kept for **consumed** ones. "Did they join a room" is not the test; "did the match start with their seat" is.
+
+- **Payment state machine** (every entry payment):
+
+```
+pending → paid (reserved for match X) → consumed   # match went active with them → no return
+                                       → refunded    # unconsumed → refund to source (MVP default)
+                                       → credited     # unconsumed → entry-only credit (post-MVP, see below)
+```
+The reservation is released by an explicit trigger: match-start **consumes** it; a fill-timeout, void, join-failure, or pre-start abandon **releases** it to `refunded` (or `credited`).
+
 - **Refund / void policy:**
 
-| Scenario | Policy |
-|----------|--------|
-| Match never reaches min players | Full auto-refund, void |
-| Server crash before `active` | Full auto-refund |
-| Server crash mid-match | Void + refund |
-| `total_verified_takedowns = 0` | Void + replay; auto-refund if not replayed |
-| Paid but client failed to join | Auto-refund that player |
-| Voluntary disconnect | No refund |
+| Scenario | Seat consumed? | Policy |
+|----------|----------------|--------|
+| Match never reaches min players | No | Full auto-refund, void |
+| Server crash before `active` | No | Full auto-refund |
+| `total_verified_takedowns = 0` | — | Void + replay; auto-refund if not replayed |
+| **Paid but client never connected** (crash, network, ticket expired) | No | Auto-refund to source |
+| **Paid, abandoned during lobby/countdown** (before match start) | No | Auto-refund to source |
+| Server crash mid-match | Yes | Void + refund |
+| Voluntary disconnect after match start | Yes | No refund |
+
+- **"Pay but don't join" → wallet credit? (decision)** Three options, escalating in legal weight:
+  1. **Refund to source** — lowest risk, simplest. Downside: NG refunds are slow + fees eaten twice. **← MVP default for all unconsumed entries.**
+  2. **Entry-only credit** — non-withdrawable token redeemable *only* for a future entry fee (arcade-token model). Kills repeat Paystack fees + re-entry friction; far lighter than a real wallet. **Post-MVP fast-follow**, gated on a legal check that store credit ≠ e-money.
+  3. **Withdrawable wallet** — ⚠️ holding cashable customer funds = CBN e-money / money-transmitter licensing, fund segregation, AML. **Explicitly deferred** and coupled to the legal/KYC track (A.1). Strategic upside: it is eventually what makes *payouts* scalable and fee-free (credit winnings to balance vs a manual bank transfer per match) — build it later as a licensed project, not as a side effect of this edge case.
 
 - **Payout rounding:** `payout_per_takedown = takedown_pool ÷ total_verified_takedowns` rarely divides evenly. Round **down** to ₦1; remainder rolls into platform fee (or survival winner — pick one). Invariant: `sum(payouts) + platform_fee + remainder == gross_pool` exactly.
 - **Disconnect & denominator:** a disconnected player's verified takedowns **still count** and remain payable (pending KYC).
