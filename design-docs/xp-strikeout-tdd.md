@@ -15,7 +15,7 @@ Players pay an entry fee, join a short match, earn payouts from verified takedow
 Build a stable, **mobile-browser-first** multiplayer game (no native app in MVP — deferred until traction; see architecture *Platform & roadmap*) that supports:
 
 - 10–20 players per match
-- 3–5 minute rounds
+- 5-minute rounds (300 s active)
 - server-confirmed movement, damage, takedowns, and results
 - live leaderboard
 - payout calculation
@@ -144,8 +144,8 @@ Each match runs as a Colyseus room.
 ### Room Config
 
 - max players: 20
-- min players: configurable, recommended 6–10
-- match duration: 3–5 minutes
+- min players: 6 (admin may also start manually)
+- match duration: 5 minutes (300 s active)
 - lives per player: 3
 - map: one MVP arena called “Strike Zone”
 - mode: free-for-all
@@ -876,7 +876,7 @@ anti_cheat_thresholds:
 Needs 6–20 paying players online at once — empty lobbies are the #1 killer of real-money skill games.
 - **Scheduled match windows** (e.g. every 15 min) + notify when a lobby is filling, vs always-on empty rooms.
 - Explicit **under-fill behavior**: fill timeout → start at current count or void + refund (A.2).
-- Reconcile min-player count (see A.8).
+- Min-player count = **6** (GDD §21.7).
 
 ## A.5 New-player experience & fairness 🟠 P1
 
@@ -897,11 +897,11 @@ Needs 6–20 paying players online at once — empty lobbies are the #1 killer o
 
 ## A.8 Doc consistency 🟡 P2
 
-| Field | GDD | TDD | Action |
-|-------|-----|-----|--------|
-| Session length | 3–5 min | 3–5 min | Pick one (spec.yaml was 5 min) |
-| Min players | — | "6–10" | Pick one (was `min_recommended: 6`) |
-| AI bots | not needed | not included | Allow *internal* bots (A.5/A.7) |
+| Field | Resolution |
+|-------|------------|
+| Session length | ✅ **5:00 (300 s active)** — locked in GDD §21.7; GDD/TDD prose updated |
+| Min players | ✅ **6** — locked in GDD §21.7; TDD prose updated |
+| AI bots | Allow *internal* bots only (practice/load-test); never in paid matches (A.5/A.7) |
 
 *Consistent:* 25 dmg × 4 hits = 100 HP ✓; pool split 20/70/10 ✓.
 

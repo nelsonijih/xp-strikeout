@@ -1,0 +1,86 @@
+# XP StrikeOut — local dev/test stack.
+# Brings up the backend so a full match can be played AND load-tested locally,
+# mirroring the production service boundaries + the exact join-ticket flow.
+# Architecture: ../design-docs/xp-strikeout-architecture.md §16.
+#
+#   docker compose -f infra/docker-compose.yml up --build               # postgres + redis + api + game
+#   docker compose -f infra/docker-compose.yml --profile bots up --build # + 20 simulated players (full-match test)
+#
+# Web apps (play / marketing / admin) run on the host via `npm run dev`
+# pointing at http://localhost:8080 and ws://localhost:2567.
+#
+# NOTE: build contexts assume a services/ layout (services/api, services/game,
+# services/bots). Until that code exists this file is the target spec.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: xp
+      POSTGRES_PASSWORD: xp
+      POSTGRES_DB: xp_strikeout
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d   # schema migrations + seed (run on first boot)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xp -d xp_strikeout"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  api:                                   # stands in for api.xparena.net
+    build: ../services/api
+    environment:
+      NODE_ENV: development
+      PORT: "8080"
+      DATABASE_URL: postgres://xp:xp@postgres:5432/xp_strikeout
+      REDIS_URL: redis://redis:6379
+      JOIN_TICKET_SECRET: dev-only-secret-change-me   # MUST match game
+      JOIN_TICKET_TTL_SECONDS: "60"
+      JOIN_TICKET_SKEW_SECONDS: "30"
+      SUPABASE_JWT_SECRET: dev-jwt-secret
+      DEV_AUTH_BYPASS: "true"            # mint Supabase-shaped JWTs locally; NEVER in prod
+      PAYSTACK_SECRET_KEY: sk_test_xxx   # Paystack test mode
+      PAYSTACK_WEBHOOK_SECRET: whsec_test
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  game:                                  # stands in for game.xparena.net (Colyseus)
+    build: ../services/game
+    environment:
+      NODE_ENV: development
+      PORT: "2567"
+      REDIS_URL: redis://redis:6379
+      JOIN_TICKET_SECRET: dev-only-secret-change-me   # same as api (verify-only)
+      DATABASE_URL: postgres://xp:xp@postgres:5432/xp_strikeout  # results write at match end only
+    ports: ["2567:2567"]
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  bots:                                  # internal headless players (load test / practice) — opt-in
+    build: ../services/bots
+    profiles: ["bots"]
+    environment:
+      GAME_WS_URL: ws://game:2567
+      API_URL: http://api:8080
+      BOT_COUNT: "20"
+      DEV_AUTH_BYPASS: "true"            # bots self-auth via the dev login route
+    depends_on:
+      game: { condition: service_started }
+      api: { condition: service_started }
+
+volumes:
+  pgdata:

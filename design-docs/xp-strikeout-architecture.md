@@ -21,7 +21,8 @@
 13. Auth/identity data model
 14. Environment / config
 15. Observability & ops
-16. Build order
+16. Local development & testing (Docker Compose)
+17. Build order
 
 ---
 
@@ -440,12 +441,56 @@ FLY_REGION = jnb
 - **Per-match event log** (every shot/hit/takedown) retained for dispute review — written to Supabase `audit_logs` / object storage at match end, not live.
 - **Realtime metrics:** rooms active, players connected, tick duration, broadcast kbps/client, reconnect rate, p50/p95 RTT per region — these signal when to add a Fly machine and whether NG latency is acceptable.
 - **Synthetic load:** internal headless test bots validate a 20-player room in `jnb` before real money (also doubles as practice-mode opponents; see `xp-strikeout-tdd.md` Appendix A).
-- **Deploy configs:** `infra/fly.game.toml`, `infra/fly.api.toml`, `infra/README.md`.
+- **Deploy configs:** `infra/fly.game.toml`, `infra/fly.api.toml`, `infra/README.md`. **Local stack:** `infra/docker-compose.yml` (§16).
 
 ---
 
-## 16. Build order
+## 16. Local development & testing (Docker Compose)
 
+**Goal: one command brings up the whole backend locally and lets you play — and load-test — a full match, mirroring the production *service boundaries* and the exact join-ticket flow.** Lives at `infra/docker-compose.yml`.
+
+```
+docker compose -f infra/docker-compose.yml up --build              # postgres + redis + api + game
+docker compose -f infra/docker-compose.yml --profile bots up --build  # + 20 simulated players (full-match test)
+```
+
+**Services (mirror prod boundaries, not its hosting):**
+
+| Service | Image / build | Stands in for | Local port |
+|---|---|---|---|
+| `postgres` | `postgres:16` (+ `db/init` migrations/seed) | Supabase Postgres (EU) | 5432 |
+| `redis` | `redis:7` | Upstash (presence, join-ticket nonces, rate-limit) | 6379 |
+| `api` | build `services/api` | `api.xparena.net` | 8080 |
+| `game` | build `services/game` | `game.xparena.net` (Colyseus) | 2567 |
+| `bots` *(profile `bots`)* | build `services/bots` | internal headless players for 20-player load tests / practice | — |
+
+The **web apps** (`play`, marketing, admin) run on the host via `npm run dev` against `http://localhost:8080` / `ws://localhost:2567` (fast hot-reload), or can be added as compose services later.
+
+**Auth locally (Google OAuth can't run offline):**
+- **Fast inner loop / CI:** `DEV_AUTH_BYPASS=true` on `api` mints Supabase-shaped JWTs (signed with the local `SUPABASE_JWT_SECRET`) from a dev login route — no Google round-trip. **Never enabled outside local/CI.**
+- **Full-fidelity auth:** run the **Supabase CLI** (`supabase start`) — it spins up GoTrue + Postgres + Studio in Docker, so the real Google-OAuth → JWT path works locally. Use this when testing the actual sign-in flow; use the bypass for everything else.
+
+**Payments locally:** Paystack **test-mode** keys. For the webhook, either tunnel (`cloudflared`/`ngrok`) to `api`'s webhook route, or hit a dev-only "simulate webhook" endpoint to drive `payment_status=paid`. Same idempotency path as prod.
+
+**What "bypass" means — stub the third-party *edge*, never our own *logic*.** We bypass Google's OAuth round-trip and real money movement, but the JWT stays real (signed + verified) and the payment **state machine stays live** (webhook → idempotent `paid` → reserved → consumed/refunded). The parts most likely to break — token verification, idempotent webhook, consumed-vs-refund, join-ticket replay/burn — are exercised in *every* mode.
+
+| Mode | Auth | Payment | Use for |
+|------|------|---------|---------|
+| **1. Inner loop** | `DEV_AUTH_BYPASS` mints a real signed JWT | dev route marks `paid` | gameplay/netcode iteration; the fast loop |
+| **2. Integration** | real Google path via **Supabase CLI** | Paystack **test mode** + simulated/tunneled webhook | validating the actual sign-in + payment chain; **what CI runs** |
+| **3. Staging/prod** | real | real | **nothing bypassed** |
+
+**Fail-closed safety rule (non-negotiable for a money game).** `DEV_AUTH_BYPASS` and the simulate-webhook route are **dev/CI only**: the service must **refuse to boot** if either is set while `NODE_ENV=production`, and neither flag may appear in any prod/Fly config (only in `docker-compose.yml` / CI). An auth bypass reaching prod is catastrophic, so it's gated by a hard startup assertion, not convention.
+
+**Why this matters here:** the join-ticket handshake (api mints → game verifies → Redis nonce burn), the server-authoritative tick loop, and the match→results→Postgres write are exactly the parts most likely to break in integration. Compose lets us exercise the *whole* chain — including a 20-bot match — on a laptop and in **CI** before anything touches Fly/Supabase.
+
+**Parity caveats (call them out so no one is surprised):** compose reproduces service *boundaries and contracts*, **not** hosting or geography — no Fly/Vercel, no region latency, no Supabase RLS/Auth unless using the Supabase CLI. Treat green-locally as "logic correct," not "prod-ready"; latency/region is validated by the region spike and staging.
+
+---
+
+## 17. Build order
+
+0. **Local stack first:** `infra/docker-compose.yml` (postgres + redis + api + game) so every step below is testable on a laptop and in CI from day one.
 1. **Region spike (½ day):** RTT/loss test from real NG handsets → confirm `jnb`.
 2. Stand up `game.xparena.net` (Colyseus on Fly jnb) + `api.xparena.net` (Fastify, co-located) + Redis.
 3. Google auth (§6) + profile provisioning end-to-end on `play`.

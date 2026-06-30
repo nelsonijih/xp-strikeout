@@ -1,14 +1,28 @@
 # XP StrikeOut — Infra
 
-Starter Fly.io configs for the two always-on, Lagos-proximate services. Full rationale in
-[`../design-docs/xp-strikeout-architecture.md`](../design-docs/xp-strikeout-architecture.md).
+Local dev/test stack + starter Fly.io configs for the two always-on, Lagos-proximate services.
+Full rationale in [`../design-docs/xp-strikeout-architecture.md`](../design-docs/xp-strikeout-architecture.md).
 
-| File | App | Subdomain | Region |
-|------|-----|-----------|--------|
-| `fly.game.toml` | `xp-strikeout-game` | `game.xparena.net` | `jnb` (Johannesburg) |
-| `fly.api.toml`  | `xp-strikeout-api`  | `api.xparena.net`  | `jnb` |
+| File | Purpose |
+|------|---------|
+| `docker-compose.yml` | **Local stack** — postgres + redis + api + game (+ optional `bots`) |
+| `fly.game.toml` | Deploy `game.xparena.net` (Colyseus) → Fly `jnb` (Johannesburg) |
+| `fly.api.toml`  | Deploy `api.xparena.net` → Fly `jnb` |
 
-`play.*` and `xparena.net/strikeout` and `admin.*` deploy on **Vercel** (not Fly) — see the architecture doc.
+`play.*`, `xparena.net/games`, and `admin.*` deploy on **Vercel** (not Fly) — see the architecture doc.
+
+## Local development (Docker Compose) — §16
+
+```bash
+docker compose -f infra/docker-compose.yml up --build               # postgres + redis + api + game
+docker compose -f infra/docker-compose.yml --profile bots up --build # + 20 simulated players (full-match test)
+```
+- Web apps run on the host (`npm run dev`) against `http://localhost:8080` / `ws://localhost:2567`.
+- **Auth:** `DEV_AUTH_BYPASS=true` mints Supabase-shaped JWTs locally (fast loop / CI). For the real Google-OAuth path, run the **Supabase CLI** (`supabase start`) instead.
+- **Payments:** Paystack test-mode keys; tunnel (`cloudflared`/`ngrok`) or a dev "simulate webhook" route to drive `payment_status=paid`.
+- `JOIN_TICKET_SECRET` must be **identical** on `api` and `game` (it is in the compose file).
+- Same compose is intended for **CI** integration/load tests (a 20-bot match) before anything touches Fly/Supabase.
+- **Parity caveat:** reproduces service boundaries/contracts, *not* hosting or region latency — green-locally = logic correct, not prod-ready.
 
 ## Before you deploy
 1. **Region spike (do first):** measure RTT + packet loss from real NG handsets on MTN/Glo/Airtel/9mobile to `jnb` vs a London region. Confirm `jnb` wins on the median, then lock it.

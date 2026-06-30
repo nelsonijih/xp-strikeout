@@ -16,7 +16,7 @@ Players enter short multiplayer matches, move around a small arena, shoot projec
 - **Brand:** by XP Arena
 - **Genre:** 2D top-down multiplayer arena shooter
 - **Platform:** Mobile web (browser) first — native app deferred until the MVP proves traction; players use the mobile browser for now
-- **Session Length:** 3–5 minutes
+- **Session Length:** 5 minutes (300 s active) — see §21.7
 - **Players Per Match:** 10–20 players
 - **Camera:** Top-down camera following player
 - **Match Style:** Free-for-all
@@ -362,3 +362,108 @@ Build **XP StrikeOut by XP Arena**, starting with one mode called **StrikeOut Ru
 - admin payout approval
 
 This is the simplest version that supports the business model while staying buildable for an MVP.
+
+---
+
+# 21. Gameplay Constants & Rules (Code-Ready Spec)
+
+> Concrete values so the design is unambiguous to implement. Anything tagged **⚙️ tune** is a starting value to refine in playtest; the rest are design rules. All authority is server-side (see `xp-strikeout-architecture.md` §10).
+
+## 21.1 World & coordinate system
+
+| Constant | Value | Notes |
+|---|---|---|
+| World units | pixels (logical) | Origin top-left, +x right, +y down |
+| Arena size (Strike Zone) | **1600 × 1200** | ⚙️ tune — sized so a crossing takes ~7 s → action in 5–10 s |
+| Simulation tick | **30 Hz** (33.3 ms) | Server-authoritative fixed step |
+| State broadcast | **15 Hz** | Client interpolates (~100 ms buffer) |
+| Lag-comp rewind cap | **250 ms** | Hit validation against shooter's acked view |
+
+## 21.2 Player
+
+| Constant | Value | Notes |
+|---|---|---|
+| Health / max | **100 / 100** | |
+| Lives | **3** | |
+| Damage per hit | **25** | → exactly 4 hits = takedown |
+| Hitbox | **circle, r = 24 px** | sprite ≈ 48 px |
+| Move speed (base) | **220 px/s** | ⚙️ tune — "standard" |
+| Player–player collision | **pass-through** | players don't block each other (anti-grief, simpler on mobile); collide with walls only |
+| Respawn delay | **3.0 s** | |
+| Spawn protection | **2.0 s invulnerable**, broken early if the player fires | blink VFX; prevents spawn-camping in a money game |
+
+## 21.3 Weapon — Standard Blaster
+
+| Constant | Value | Notes |
+|---|---|---|
+| Damage | **25** | |
+| Fire cooldown | **350 ms** | ⚙️ tune — ≈ 2.85 shots/s |
+| Projectile speed | **600 px/s** | ⚙️ tune — "medium" |
+| Projectile max range | **700 px** (≈ 1.17 s life), hard lifetime cap **1500 ms** | despawns on wall/player/range |
+| Projectile hitbox | **circle, r = 6 px** | |
+| Muzzle offset | **30 px** along aim from player center | so you never hit yourself |
+| Self-damage | **none** | |
+| Friendly fire | **N/A** (FFA — everyone is hostile) | |
+
+## 21.4 Controls & aiming
+
+| Rule | Value | Notes |
+|---|---|---|
+| Left stick (move) | analog 360°, **15% dead-zone**; magnitude scales speed up to base max | |
+| Right stick (aim) | analog 360°, **20% dead-zone** | |
+| Auto-fire | fires **continuously while the aim stick is held** past dead-zone, gated by cooldown; stops on release | |
+| Aim assist | **none** for MVP | keep it fair + server-authoritative |
+| Desktop (test) | WASD move, mouse aim, hold/click to fire | internal only |
+
+## 21.5 Power-ups
+
+| Constant | Value | Notes |
+|---|---|---|
+| Spawn nodes | **3–5 fixed** map locations | |
+| Initial spawn | at match start | |
+| Respawn after pickup | **15 s** at that node | ⚙️ tune |
+| Pickup | walk over (pickup radius **28 px**) | |
+| **Health Boost** | +40 HP, capped at 100 | |
+| **Speed Boost** | **1.5×** move speed (→ 330 px/s), **5 s** | re-pickup refreshes timer, no stacking of magnitude |
+| **Shield** | absorbs the **next 1 incoming hit** in full, else expires after **8 s** | one shield at a time |
+| Stacking | **different** power-ups may be active at once (e.g. Speed + Shield); **same** type refreshes, never stacks magnitude | |
+
+## 21.6 Spawning
+
+| Rule | Value |
+|---|---|
+| Spawn points | **4–6** fixed |
+| Start spawn | random among spawn points |
+| Respawn selection | choose the spawn point with **max distance to the nearest living player** (anti spawn-camp) |
+
+## 21.7 Match timing & flow
+
+| Constant | Value |
+|---|---|
+| Players | min **6** to auto-start (admin may start manually), max **20** |
+| Countdown | **10 s** |
+| Active duration | **300 s** (5:00) |
+| End conditions | **≤ 1 player alive** OR **timer = 0** |
+| Survival tiebreak (multiple alive at timer) | most lives → most takedowns → fewest deaths → earliest final takedown → **if still fully tied, split the survival prize equally** |
+
+## 21.8 Spectator (out of lives)
+
+- Becomes spectator; **follow-only camera** (auto-follows the match leader or own last attacker) — **no free pan**, to limit ghosting/collusion (see TDD Appendix A.6).
+
+## 21.9 Disconnect during match
+
+- Character idles in place and remains **vulnerable** for **10 s**; reconnect within the window resumes (architecture §10, §9).
+- After 10 s → marked disconnected, removed from play, remaining lives forfeit. Verified takedowns already earned still count and remain payable (TDD A.2).
+
+## 21.10 Edge cases (must be deterministic)
+
+| Case | Rule |
+|---|---|
+| Last two players die on the same tick | Match ends with no sole survivor; survival prize resolved by 21.7 tiebreak between them (likely split). |
+| Takedown lands on the buzzer | Damage for the final tick resolves **before** the timer-end check, so a kill at 0:00 counts. |
+| Projectiles in flight at match end | Discarded after the final tick; no post-buzzer kills. |
+| Player reaches 0 HP from two attackers same tick | Takedown credited to the hit processed first in tick order (deterministic by projectile id); the other gets an assist if assists are enabled. |
+
+## 21.11 Assist (optional for MVP)
+
+- If another player dealt damage to the eliminated player within the **last 5 s**, they get +1 assist. Assists are tracked but **do not pay** in MVP (display only).
