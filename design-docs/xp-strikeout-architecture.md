@@ -78,7 +78,7 @@ Managed hosts and their African coverage:
 | Render | ❌ (US/EU/Singapore) | Rejected for realtime; fallback only. |
 | Supabase | ❌ (closest: London / Frankfurt) | **London**, kept off the hot path. |
 | Vercel | ❌ (edge CDN global; functions pin `fra1`/`lhr`) | Static + the three Next.js apps. |
-| Upstash Redis | ✅ global / EU | Presence, join-ticket nonces, rate-limit. EU region. |
+| Redis (Upstash regional / Fly Redis) | regional | Presence, join-ticket nonces, rate-limit. **One regional instance co-located with `jnb`** — atomic single-node ops only. ⚠️ **Never a global / multi-region eventually-consistent Redis for nonces/locks** — a replica lag can double-admit a burned ticket. See §9.1. |
 
 **Approximate RTT from Lagos (measure before committing — NG routing is cable-dependent):**
 
@@ -182,9 +182,9 @@ When that happens, prefer a **Tier-III carrier-neutral Lagos DC peered at IXPN**
 **`game.xparena.net` (Colyseus)**
 - One **room per match**. Server-authoritative movement/shooting/damage/takedowns/timer.
 - Verifies the join ticket on `onAuth` — **no ticket, no entry**.
-- Emits final results to `api`/Supabase once, then locks.
+- **Submits computed results to `api`** (idempotent, keyed by `match_id`) and locks. **The game server holds no `service_role` key and never writes the DB directly** — `api` owns all DB writes (smaller blast radius; centralizes finalization). See §8.1.
 
-**Redis (Upstash)** — matchmaking/presence, join-ticket nonces (one-time use), rate limiting, reconnection slots. Enables multi-machine scaling via the Colyseus Redis driver.
+**Redis** — matchmaking/presence, join-ticket nonces (one-time use), rate limiting, reconnection slots; also backs durable finalization queue state (§8.1). **Single regional instance co-located with `jnb`** (see §3). Enables multi-machine scaling via the Colyseus Redis driver.
 
 ---
 
@@ -263,11 +263,21 @@ Keep the boundary clean (separate subdomain) so `api` can move to its own servic
 7. game: onAuth verifies ticket + burns nonce → admit to room
 8. Countdown → active → server simulates (NO db writes in this phase)
 9. Match ends (timer or last alive) → server computes results ONCE
-10. game → api → Supabase: write match + match_players + results (single txn)
+10. game → **api** (idempotent submit, key = match_id); api persists match + match_players + results in one txn — §8.1
 11. Room → results_locked; clients fetch results from api
 12. Admin reviews flags → approves payout → Paystack Transfers API (later: automated)
 ```
-**Key property:** step 8 is pure in-memory simulation in `jnb`; EU database latency never touches gameplay. The only cross-region hop is the single results write at step 10.
+**Key property:** step 8 is pure in-memory simulation in `jnb`; EU database latency never touches gameplay. The only cross-region hop is the single results submit at step 10.
+
+### 8.1 Result finalization is durable (money-critical — cannot be best-effort)
+
+Match state lives in memory in the game server; a crash after "match ends" but before persistence would lose real-money results. Finalization is therefore designed to survive failure:
+
+- **api owns all DB writes.** The game server computes results and **submits them to api** over an internal authenticated call — it holds no DB credentials (see §5, §14). This centralizes finalization and shrinks the credential blast radius.
+- **Idempotent.** `POST /internal/matches/:id/finalize` is keyed by `match_id`; results tables are unique on `match_id` (`INSERT … ON CONFLICT DO NOTHING`). Re-submits are safe — retries and duplicates converge to one settlement.
+- **Durable submit with retry.** The game server persists the computed result to a **durable finalization record** (Redis-backed queue / outbox) *before* releasing the room, and retries the api submit with backoff until acked. api's write is a single transaction (`numeric`, never floats).
+- **Crash / unrecoverable path → void + refund.** If the room dies before it can compute+submit, a **reconciliation worker** detects the abandoned match (heartbeat/timeout) and **voids it + auto-refunds** all consumed entries (TDD A.2) — never a silent loss. A match is only `results_locked` once api has durably persisted it.
+- **No partial payouts.** Payout is derived only from a fully persisted, locked result; a match stuck mid-finalize is either retried to completion or voided, never half-paid.
 
 ---
 
@@ -313,6 +323,10 @@ A short-lived, single-use credential proving a player **paid for a specific matc
 ```
 Steps 1–5 are signature/claim checks (no I/O); step 6 (Redis `DEL`) is the only external call and is what makes the ticket single-use across machines.
 
+#### 9.1 The nonce burn is a lock — Redis must be single-region
+
+Step 6's single-use guarantee relies on `DEL` being **atomic and immediately consistent**. This holds on a **single regional Redis** (one primary), which is why §3 mandates one regional instance co-located with `jnb`. A **global, multi-region, eventually-consistent** Redis would let a `DEL` on one replica lag another → the same `jti` seen as un-burned twice → **double-admit** (two players on one paid entry). Rule: **never** put nonces/locks on eventually-consistent storage. Same applies to reconnection-slot and rate-limit keys.
+
 **Threats handled:** unpaid socket (no ticket), replay (TTL + nonce burn), one-entry-two-players (nonce + one-socket rule), wrong-room reuse (room binding), forgery (HS256), clock skew (±30s), joining a running match (status check at issue), tampered claims (signature). *Out of scope:* in-game cheating (server-authoritative sim + anti-cheat), multi-accounting across different paid entries (KYC/device signals).
 
 **Reconnection:** on disconnect the room holds the slot for the idle window (10s) keyed by `user_id`. `POST /api/matches/:id/resume` issues a **resume ticket** (same format, `"resume": true`, fresh `jti`); `onAuth` step 7 **replaces** a held slot instead of rejecting, but rejects if the slot is still live (no double-connect).
@@ -353,6 +367,17 @@ Targeting mid/low-end Android + **Chrome mobile browser** on metered data (no na
 - **Payout:** **Paystack Transfers API** to NUBAN accounts. MVP = admin-approved manual trigger; automate after trust is established.
 - Webhook endpoint on the always-on `api` service (not serverless) for retry reliability.
 - **Entry is reserved per match seat, consumed only at match start.** A paid entry whose seat is never *consumed* (match didn't start with that player) is returned, not kept. **MVP returns to source (refund); no wallet.** Entry-only (non-withdrawable) credit is a post-MVP fast-follow; a withdrawable wallet is deferred (CBN e-money licensing). Full state machine + scenario table in **TDD Appendix A.2**.
+
+### 12.1 Payment-to-seat lifecycle (async NG rails — cannot be best-effort)
+
+Bank transfer / USSD are **asynchronous**: a player may abandon payment, or it may confirm minutes later. The seat reservation must be time-bounded and self-healing, or seats leak and late money is mishandled.
+
+- **Reservation TTL.** On "Join", the seat is held `pending` with an expiry (e.g. until countdown / a few minutes). If payment isn't confirmed in time, the **seat is released** and offered to others; the pending payment is marked expired.
+- **Reconciliation sweep — don't trust webhooks alone.** A periodic job **polls Paystack** for the status of outstanding `pending` transactions (webhooks can be missed/delayed) and reconciles state. This is the safety net behind the webhook path.
+- **Late-arriving payment.** If money confirms after the seat expired or the match already started/ended → the entry is **auto-refunded** (never silently kept, never admitted late). Post-MVP this can become entry-credit.
+- **Cleanup.** Expired reservations are swept so lobbies reflect real, paid, live seats.
+
+Ties to the payment state machine and scenario table in **TDD Appendix A.2** (`pending` now carries a TTL → `expired → refunded`).
 
 ---
 
@@ -424,15 +449,18 @@ SUPABASE_JWT_SECRET          # verify incoming user JWTs
 JOIN_TICKET_SECRET           # signs join tickets (shared with game; verify-only there)
 JOIN_TICKET_TTL_SECONDS  = 60
 JOIN_TICKET_SKEW_SECONDS = 30
-REDIS_URL                    # Upstash
+INTERNAL_API_TOKEN           # authenticates game→api result-finalize calls (shared with game)
+REDIS_URL                    # single REGIONAL instance near jnb (not global) — §9.1
 PAYSTACK_SECRET_KEY
 PAYSTACK_WEBHOOK_SECRET
 
 # game.xparena.net
 JOIN_TICKET_SECRET           # same secret, verify only
-REDIS_URL
-SUPABASE_SERVICE_ROLE_KEY    # results write only, at match end
+INTERNAL_API_TOKEN           # same value as api; used to submit results (§8.1)
+REDIS_URL                    # same regional Redis as api
+API_URL                      # internal base URL for result submission
 FLY_REGION = jnb
+# NOTE: game holds NO SUPABASE_SERVICE_ROLE_KEY — api owns all DB writes (§5, §8.1)
 ```
 
 ### 14.1 Secrets & configuration — where each key lives
@@ -442,12 +470,13 @@ FLY_REGION = jnb
 | Key | Source (where you get it) | Destination(s) |
 |-----|---------------------------|----------------|
 | Supabase URL + anon key | Supabase → Settings → API | **Vercel** (`NEXT_PUBLIC_*`) + local `.env` |
-| Supabase `service_role` key | Supabase → API | **Fly** (api + game) + **CI** + local — *never client* |
+| Supabase `service_role` key | Supabase → API | **Fly (api only)** + **CI** + local — *never client, never game* (§8.1) |
 | Supabase JWT secret | Supabase → API | **Fly** (api) + local |
 | Google OAuth id/secret | Google Cloud Console | **Supabase dashboard** → Auth → Providers → Google (*not* app code) |
 | Paystack secret + webhook secret | Paystack (test first) | **Fly** (api) + **CI** + local |
-| Upstash `REDIS_URL` | Upstash console | **Fly** (api + game) + local |
+| `REDIS_URL` | Regional Redis near jnb (Upstash regional / Fly Redis) | **Fly** (api + game) + local — *single-region only* (§9.1) |
 | `JOIN_TICKET_SECRET` | *you generate* (`openssl rand -hex 32`) | **Fly** (api + game — **identical**) + local |
+| `INTERNAL_API_TOKEN` | *you generate* (`openssl rand -hex 32`) | **Fly** (api + game — **identical**) + local — authenticates game→api finalize |
 | Sentry DSN | Sentry | **Vercel** + **Fly** + CI |
 | GA measurement id | Google Analytics | **Vercel** (`NEXT_PUBLIC_`) |
 
@@ -488,7 +517,7 @@ docker compose -f infra/docker-compose.yml --profile bots up --build  # + 20 sim
 | Service | Image / build | Stands in for | Local port |
 |---|---|---|---|
 | `postgres` | `postgres:16` (+ `db/init` migrations/seed) | Supabase Postgres (EU) | 5432 |
-| `redis` | `redis:7` | Upstash (presence, join-ticket nonces, rate-limit) | 6379 |
+| `redis` | `redis:7` | **single regional** Redis near jnb (presence, nonces, rate-limit, finalize queue) — §9.1 | 6379 |
 | `api` | build `services/api` | `api.xparena.net` | 8080 |
 | `game` | build `services/game` | `game.xparena.net` (Colyseus) | 2567 |
 | `bots` *(profile `bots`)* | build `services/bots` | internal headless players for 20-player load tests / practice | — |
@@ -537,6 +566,8 @@ The **web apps** (`play`, marketing, admin) run on the host via `npm run dev` ag
 - **Payout math** — property-based: for random player/takedown distributions, assert the invariant `sum(all payouts) + platform_fee + remainder == gross_pool` exactly, `numeric` only, correct rounding-down + remainder policy (A.2).
 - **Payment state machine** — `pending→paid→consumed|refunded|credited` transitions; **unconsumed entry is always returned, never kept**; consumed entry never refunded.
 - **Webhook idempotency** — duplicate, out-of-order, and replayed Paystack webhooks converge to one `paid` and one settlement (keyed on `provider_reference`).
+- **Finalization durability (§8.1)** — `finalize(match_id)` is idempotent (double-submit → one result); a **room crash after "match ends" but before submit** → reconciliation voids + refunds; a match is never half-paid.
+- **Payment-to-seat lifecycle (§12.1)** — a `pending` reservation **expires** and releases the seat; a **late-arriving** payment (after expiry/match) is refunded, not kept or admitted; the **reconciliation sweep** catches a missed webhook by polling Paystack.
 - **Zero-takedown / void** — match voids and refunds correctly.
 
 ### 17.3 Security tests (🔴)

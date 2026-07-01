@@ -3,7 +3,9 @@
 # Run real-handset RTT tests (MTN/Glo/Airtel/9mobile) before locking the region.
 #
 #   fly deploy -c infra/fly.game.toml
-#   fly secrets set JOIN_TICKET_SECRET=... REDIS_URL=... SUPABASE_SERVICE_ROLE_KEY=... -a xp-strikeout-game
+#   fly secrets set JOIN_TICKET_SECRET=... INTERNAL_API_TOKEN=... REDIS_URL=... API_URL=... -a xp-strikeout-game
+#   NOTE: game holds NO SUPABASE_SERVICE_ROLE_KEY — it submits results to api, which owns all DB writes (§5, §8.1).
+#   REDIS_URL must be a single REGIONAL instance near jnb (not global/eventually-consistent) — §9.1.
 
 app            = "xp-strikeout-game"
 primary_region = "jnb"          # Johannesburg
@@ -16,7 +18,7 @@ primary_region = "jnb"          # Johannesburg
   NODE_ENV   = "production"
   PORT       = "2567"           # Colyseus default
   FLY_REGION = "jnb"
-  # secrets (JOIN_TICKET_SECRET, REDIS_URL, SUPABASE_SERVICE_ROLE_KEY) via `fly secrets set`
+  # secrets (JOIN_TICKET_SECRET, INTERNAL_API_TOKEN, REDIS_URL, API_URL) via `fly secrets set`
 
 [http_service]
   internal_port       = 2567

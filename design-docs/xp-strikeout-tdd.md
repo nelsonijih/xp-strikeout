@@ -828,11 +828,22 @@ The `payments` / `payout_records` tables exist but flow, edge cases, and money m
 - **Payment state machine** (every entry payment):
 
 ```
-pending → paid (reserved for match X) → consumed   # match went active with them → no return
-                                       → refunded    # unconsumed → refund to source (MVP default)
-                                       → credited     # unconsumed → entry-only credit (post-MVP, see below)
+pending (reserved for match X, has TTL) → paid → consumed   # match went active with them → no return
+        │                                       → refunded    # unconsumed → refund to source (MVP default)
+        │                                       → credited     # unconsumed → entry-only credit (post-MVP)
+        └───────────────────────────────────► expired         # TTL elapsed w/o payment → release seat
+             (late payment after expiry) ─────► refunded        # money arrived too late → refund, never admit
 ```
 The reservation is released by an explicit trigger: match-start **consumes** it; a fill-timeout, void, join-failure, or pre-start abandon **releases** it to `refunded` (or `credited`).
+
+- **Payment-to-seat lifecycle — async NG rails cannot be best-effort (cannot defer to post-MVP).** Bank transfer / USSD confirm asynchronously and are often abandoned or late:
+  - **Reservation TTL:** `pending` holds the seat only until countdown / a short window, then → `expired` and the seat is freed.
+  - **Reconciliation sweep:** a periodic job **polls Paystack** for outstanding `pending` transactions — webhooks can be missed, so this is the safety net (don't rely on webhooks alone).
+  - **Late payment:** money confirming after expiry / match start → **auto-refund** (never silently kept, never admitted late).
+
+- **Result finalization durability (cannot defer).** Match state is in-memory in the game server, so finalization must survive a crash (architecture §8.1):
+  - **api owns all DB writes;** the game server submits results over an internal authenticated call and holds **no `service_role` key**.
+  - **Idempotent** `finalize(match_id)` (results unique on `match_id`); durable submit + retry; a room that dies before submitting is detected by a reconciliation worker and **voided + refunded**. A match is `results_locked` only once api has durably persisted it — **never half-paid**.
 
 - **Refund / void policy:**
 

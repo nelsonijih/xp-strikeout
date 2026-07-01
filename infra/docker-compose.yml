@@ -48,6 +48,7 @@ services:
       JOIN_TICKET_SECRET: dev-only-secret-change-me   # MUST match game
       JOIN_TICKET_TTL_SECONDS: "60"
       JOIN_TICKET_SKEW_SECONDS: "30"
+      INTERNAL_API_TOKEN: dev-internal-token-change-me  # authenticates game→api finalize; MUST match game
       SUPABASE_JWT_SECRET: dev-jwt-secret
       DEV_AUTH_BYPASS: "true"            # mint Supabase-shaped JWTs locally; NEVER in prod
       PAYSTACK_SECRET_KEY: sk_test_xxx   # Paystack test mode
@@ -62,13 +63,14 @@ services:
     environment:
       NODE_ENV: development
       PORT: "2567"
-      REDIS_URL: redis://redis:6379
-      JOIN_TICKET_SECRET: dev-only-secret-change-me   # same as api (verify-only)
-      DATABASE_URL: postgres://xp:xp@postgres:5432/xp_strikeout  # results write at match end only
+      REDIS_URL: redis://redis:6379      # single regional Redis (§9.1); atomic nonce burn
+      JOIN_TICKET_SECRET: dev-only-secret-change-me     # same as api (verify-only)
+      INTERNAL_API_TOKEN: dev-internal-token-change-me  # same as api; submits results (§8.1)
+      API_URL: http://api:8080          # game submits results here — game holds NO DB creds
     ports: ["2567:2567"]
     depends_on:
       redis: { condition: service_healthy }
-      postgres: { condition: service_healthy }
+      api: { condition: service_started }
 
   bots:                                  # internal headless players (load test / practice) — opt-in
     build: ../services/bots
