@@ -22,8 +22,9 @@
 14. Environment / config
 15. Observability & ops
 16. Local development & testing (Docker Compose)
-17. Build order
-18. Art & assets
+17. Testing strategy
+18. Build order
+19. Art & assets
 
 ---
 
@@ -489,7 +490,67 @@ The **web apps** (`play`, marketing, admin) run on the host via `npm run dev` ag
 
 ---
 
-## 17. Build order
+## 17. Testing strategy
+
+> §16 is *how to run* tests (compose, modes, bots); this is *what we test, at which layer, and what gates a release.* Because this is a **real-money realtime** product, the priority is **correctness of money + security + authority invariants**, not a coverage percentage. Acceptance maps to the TDD Definition of Done (§20).
+
+### 17.1 Test pyramid
+
+| Layer | Scope | Tooling (suggested) | Runs |
+|-------|-------|---------------------|------|
+| **Unit** | Pure logic: payout math, tick/physics helpers, ticket sign/verify, validators | Vitest/Jest, **fast-check** (property-based) for money math | every commit |
+| **Integration** | A service against real Postgres + Redis (via compose): API routes, webhook handler, ticket mint→burn | Vitest + supertest, Colyseus test client | every commit (CI) |
+| **Contract** | API ↔ game ↔ client message shapes (join ticket claims, room state schema) stay in sync | shared types + schema assertions | CI |
+| **E2E** | Full chain in compose: dev-login → join → pay(stub) → room → match → results in Postgres | Playwright (web) + a headless game client | CI (pre-merge) |
+| **Load / soak** | 20-bot match; many concurrent rooms; sustained run | `bots` profile + k6/artillery for REST | nightly + pre-release |
+| **Security** | Ticket abuse, server-authority, prod-guard | targeted integration tests | CI |
+| **Real-device / manual** | Feel, framerate, network on real NG handsets | manual matrix (17.7) | pre-release |
+
+### 17.2 Money-critical tests (🔴 must never regress)
+- **Payout math** — property-based: for random player/takedown distributions, assert the invariant `sum(all payouts) + platform_fee + remainder == gross_pool` exactly, `numeric` only, correct rounding-down + remainder policy (A.2).
+- **Payment state machine** — `pending→paid→consumed|refunded|credited` transitions; **unconsumed entry is always returned, never kept**; consumed entry never refunded.
+- **Webhook idempotency** — duplicate, out-of-order, and replayed Paystack webhooks converge to one `paid` and one settlement (keyed on `provider_reference`).
+- **Zero-takedown / void** — match voids and refunds correctly.
+
+### 17.3 Security tests (🔴)
+- **Join ticket (§9):** reject expired, wrong-room, forged-signature, and **replayed** tickets; a second use of the same `jti` fails; two concurrent connects with one ticket → exactly one admitted.
+- **Server authority:** client-sent impossible movement/fire-rate is rejected; a client **cannot self-declare** hits/damage/takedowns; unpaid socket (no ticket) is refused.
+- **Fail-closed guard:** service **refuses to boot** if `DEV_AUTH_BYPASS` / simulate-webhook is set while `NODE_ENV=production` (§16).
+- **RLS:** a user cannot read/modify another user's rows; admin/payout tables are service-role only.
+
+### 17.4 Realtime & determinism
+- **Tick loop** produces identical results for identical inputs (seeded); **§21.10 edge cases** each have a test: same-tick double death, buzzer-beater kill counts, in-flight projectiles discarded, double-attacker takedown attribution.
+- **Reconnection:** disconnect → resume within the idle window re-enters the same room/state (§9); after timeout the seat is released per rules.
+- **Anti-cheat flags:** each detector (A.3) fires at its threshold and not below it.
+
+### 17.5 Load, soak & budgets
+- **20-bot match** completes cleanly; assert server **tick duration** stays within budget and **broadcast kbps/client** within the mobile-data budget (§11).
+- **Concurrency:** N simultaneous rooms on one Fly machine before degradation → sets the scale-out trigger.
+- **Soak:** a long multi-match run with no memory growth / socket leaks; graceful drain on deploy doesn't drop a live match.
+
+### 17.6 Real-device & network matrix (manual, pre-release)
+- Devices: a set of common/low-end **Android** phones (+ Chrome).
+- Networks: **MTN, Glo, Airtel, 9mobile** on 4G/3G — folds into the **region spike** (§3): capture p50/p95 RTT, jitter, packet loss, and observed framerate.
+- Scenarios: mid-match backgrounding, WiFi↔4G handoff, in-app-webview auth fallback (§6).
+
+### 17.7 CI gates (block merge / deploy)
+1. Lint + typecheck + unit (incl. payout property tests) green.
+2. Integration + E2E green in compose (real Postgres/Redis).
+3. All **🔴 money + security** suites green — non-negotiable.
+4. A **20-bot match** passes in CI (smoke-level) before deploy.
+5. Prod build asserts no bypass flags present.
+
+### 17.8 Environments
+- **Local** (compose) — dev inner loop.
+- **CI** — compose-based, ephemeral, runs the gates above.
+- **Staging** — Fly `jnb` + a separate Supabase project + Paystack **test** mode; the only place latency/region and real Google auth are validated before prod.
+
+### 17.9 Acceptance → Definition of Done
+Each TDD §20 DoD item has an owning test: *"server confirms all takedowns"* → 17.4; *"final payout accurate"* → 17.2; *"results save"* → E2E; *"suspicious activity flagged"* → 17.4 anti-cheat; *"stable on common Android"* → 17.6. **MVP ships when every DoD item has a green owning test + a passing real-device pass.**
+
+---
+
+## 18. Build order
 
 0. **Local stack first:** `infra/docker-compose.yml` (postgres + redis + api + game) so every step below is testable on a laptop and in CI from day one.
 1. **Region spike (½ day):** RTT/loss test from real NG handsets → confirm `jnb`.
@@ -503,7 +564,7 @@ The **web apps** (`play`, marketing, admin) run on the host via `npm run dev` ag
 
 ---
 
-## 18. Art & assets
+## 19. Art & assets
 
 **Decision: we do not create custom graphics for the MVP.** Ship with programmer-art primitives → a free CC0 asset pack; commission bespoke art only after traction. Visual direction (dark/neon, simple avatars, clean map) is GDD §19; gameplay shapes/sizes are GDD §21.
 
