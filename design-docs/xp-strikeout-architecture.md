@@ -435,6 +435,33 @@ SUPABASE_SERVICE_ROLE_KEY    # results write only, at match end
 FLY_REGION = jnb
 ```
 
+### 14.1 Secrets & configuration — where each key lives
+
+**Golden rules:** secrets never go in the repo, in `fly.toml`, or in the committed `docker-compose.yml`. Only `NEXT_PUBLIC_*` (public-safe) values reach the browser. The `service_role` key and all secrets are server-only. Keep test and live (Paystack especially) separate. A committed **`.env.example`** (repo root) lists every key with placeholders; the real `.env` is gitignored.
+
+| Key | Source (where you get it) | Destination(s) |
+|-----|---------------------------|----------------|
+| Supabase URL + anon key | Supabase → Settings → API | **Vercel** (`NEXT_PUBLIC_*`) + local `.env` |
+| Supabase `service_role` key | Supabase → API | **Fly** (api + game) + **CI** + local — *never client* |
+| Supabase JWT secret | Supabase → API | **Fly** (api) + local |
+| Google OAuth id/secret | Google Cloud Console | **Supabase dashboard** → Auth → Providers → Google (*not* app code) |
+| Paystack secret + webhook secret | Paystack (test first) | **Fly** (api) + **CI** + local |
+| Upstash `REDIS_URL` | Upstash console | **Fly** (api + game) + local |
+| `JOIN_TICKET_SECRET` | *you generate* (`openssl rand -hex 32`) | **Fly** (api + game — **identical**) + local |
+| Sentry DSN | Sentry | **Vercel** + **Fly** + CI |
+| GA measurement id | Google Analytics | **Vercel** (`NEXT_PUBLIC_`) |
+
+Two "hop" cases to note: **Google OAuth keys go *into* Supabase** (Supabase brokers login), and **Supabase's keys come *out* into Vercel/Fly**.
+
+**Per-destination:**
+- **Vercel** (web) — Project → Settings → Environment Variables (per Production/Preview/Development), or `vercel env add`.
+- **Fly** (api/game) — `fly secrets set KEY=value -a <app>`. `fly.toml [env]` is for non-secret config only (`PORT`, `FLY_REGION`).
+- **Supabase** — Google provider id/secret set in the dashboard, not in code.
+- **CI (GitHub Actions)** — repo → Settings → Secrets and variables → Actions; used as `${{ secrets.NAME }}`.
+- **Local** — gitignored `.env` (from `.env.example`), read by `docker-compose.yml` via `env_file`.
+
+*(Later, when the team grows, a secrets manager like Doppler or 1Password can sync these into each platform — not needed for MVP.)*
+
 ---
 
 ## 15. Observability & ops

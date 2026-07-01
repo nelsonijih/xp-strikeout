@@ -1,0 +1,21 @@
+# Secrets — never commit real values (see .env.example for the template)
+.env
+.env.*
+!.env.example
+
+# Dependencies / build
+node_modules/
+dist/
+build/
+.next/
+out/
+
+# Logs / OS / editor
+*.log
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Test / coverage
+coverage/
