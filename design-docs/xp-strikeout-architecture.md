@@ -23,6 +23,7 @@
 15. Observability & ops
 16. Local development & testing (Docker Compose)
 17. Build order
+18. Art & assets
 
 ---
 
@@ -499,3 +500,33 @@ The **web apps** (`play`, marketing, admin) run on the host via `npm run dev` ag
 6. Paystack charge + webhook; results write at match end to Supabase (EU).
 7. Headless bots → 20-player load test in `jnb`.
 8. Admin + payout (Transfers API).
+
+---
+
+## 18. Art & assets
+
+**Decision: we do not create custom graphics for the MVP.** Ship with programmer-art primitives → a free CC0 asset pack; commission bespoke art only after traction. Visual direction (dark/neon, simple avatars, clean map) is GDD §19; gameplay shapes/sizes are GDD §21.
+
+### 18.1 Asset inventory
+
+- **In-game (Phaser):** player sprite (rotates to aim), projectile, 3 power-up icons (health/speed/shield), Strike Zone tileset (floor/walls/cover), effects (muzzle flash, hit, elimination, shield bubble, speed trail, spawn-protect blink), spawn/power-up node markers.
+- **HUD/UI (React/CSS, not sprite art):** health bar, lives, takedown count, timer, mini-leaderboard, on-screen touch joysticks, active-power-up indicators.
+- **Brand:** XP Arena logo + the neon theme.
+- **Audio (parallel track):** SFX (fire, hit, elimination, pickup, countdown) + light ambient — sourced the same CC0 way (e.g. Kenney audio).
+
+### 18.2 Sourcing plan (phased — "create" only at the end)
+
+| Phase | Source | Purpose |
+|-------|--------|---------|
+| **0 — Programmer art** | Phaser primitives (circles = players, dots/lines = projectiles, rects = walls) | Build + tune gameplay/netcode with **zero** art dependency. Primitives map 1:1 to §21 hitboxes → great for debugging. |
+| **1 — CC0 pack (MVP look)** | **Kenney.nl** top-down packs (CC0) | "Looks like a game" at ~no cost, cohesive, mobile-friendly, no attribution/licensing risk. **This is the MVP art.** |
+| **2 — Bespoke (post-traction)** | Commissioned characters / branded map / skins | Identity + a future monetization lever (skins are in not-in-MVP). |
+
+### 18.3 Licensing
+Prefer **CC0** (Kenney) — no attribution required, commercial-safe. Regardless, keep an `ASSETS.md` recording each asset's source + license in the repo. **Avoid AI-generated art on the critical path** — weaker cohesion across a sprite set and commercial-licensing ambiguity for a paid product.
+
+### 18.4 Mobile asset pipeline (ties to §11)
+Pack sprites into **texture atlases / sprite sheets**; compress (WebP where supported, else PNG); **lazy-load the Phaser scene + atlases only on `/strikeout`**, never on marketing; immutable content-hashed filenames + PWA cache so returning players re-download almost nothing. Keep the initial play-route bundle within the per-client data budget (metered NG data).
+
+### 18.5 Player differentiation (a requirement, not decoration)
+In a 20-player top-down FFA, telling players apart matters more than sprite fidelity. Required from day one (works even with primitives): a palette of **≥20 visually distinct colors/tints**, a **gamer-tag label** above each sprite, and a clear **"you" indicator** (outline/arrow). This is a design rule the client must implement regardless of art phase.
