@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install
+      - run: pnpm -r --if-present run typecheck
+      - run: pnpm --filter @xp/shared test
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: xp, POSTGRES_PASSWORD: xp, POSTGRES_DB: xp_strikeout }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xp -d xp_strikeout"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      DATABASE_URL: postgres://xp:xp@localhost:5432/xp_strikeout
+      REDIS_URL: redis://localhost:6379
+      JOIN_TICKET_SECRET: ci-secret
+      INTERNAL_API_TOKEN: ci-internal
+      SUPABASE_JWT_SECRET: ci-jwt
+      DEV_AUTH_BYPASS: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.12.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install
+      - name: Apply DB schema
+        run: psql "$DATABASE_URL" -f db/init/001_schema.sql
+      - name: API tests (ticket burn, finalize idempotency, void-on-crash)
+        run: pnpm --filter @xp/api test
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bring up stack (short match)
+        run: MATCH_DURATION_MS=8000 docker compose -f infra/docker-compose.yml up -d --build postgres redis api game
+      - name: Wait for api health
+        run: for i in $(seq 1 60); do curl -sf localhost:8080/health && exit 0; sleep 2; done; echo "api never healthy"; exit 1
+      - name: Run a full bot match
+        run: docker compose -f infra/docker-compose.yml run --rm -e BOT_COUNT=6 bots
+      - name: Assert results were durably persisted
+        run: |
+          COUNT=$(docker compose -f infra/docker-compose.yml exec -T postgres psql -U xp -d xp_strikeout -tAc "select count(*) from match_results;")
+          echo "match_results rows: $COUNT"
+          test "$COUNT" -ge 1
+      - name: Assert a match reached results_locked
+        run: |
+          LOCKED=$(docker compose -f infra/docker-compose.yml exec -T postgres psql -U xp -d xp_strikeout -tAc "select count(*) from matches where status='results_locked';")
+          echo "results_locked matches: $LOCKED"
+          test "$LOCKED" -ge 1
+      - name: Teardown
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down -v

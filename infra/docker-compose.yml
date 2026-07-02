@@ -9,8 +9,7 @@
 # Web apps (play / marketing / admin) run on the host via `npm run dev`
 # pointing at http://localhost:8080 and ws://localhost:2567.
 #
-# NOTE: build contexts assume a services/ layout (services/api, services/game,
-# services/bots). Until that code exists this file is the target spec.
+# Build context is the repo root (..) so pnpm workspace deps (@xp/shared) resolve.
 
 services:
   postgres:
@@ -22,7 +21,7 @@ services:
     ports: ["5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d   # schema migrations + seed (run on first boot)
+      - ../db/init:/docker-entrypoint-initdb.d   # schema migrations + seed (run on first boot)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U xp -d xp_strikeout"]
       interval: 5s
@@ -39,7 +38,9 @@ services:
       retries: 12
 
   api:                                   # stands in for api.xparena.net
-    build: ../services/api
+    build:
+      context: ..
+      dockerfile: services/api/Dockerfile
     environment:
       NODE_ENV: development
       PORT: "8080"
@@ -59,7 +60,9 @@ services:
       redis: { condition: service_healthy }
 
   game:                                  # stands in for game.xparena.net (Colyseus)
-    build: ../services/game
+    build:
+      context: ..
+      dockerfile: services/game/Dockerfile
     environment:
       NODE_ENV: development
       PORT: "2567"
@@ -67,13 +70,16 @@ services:
       JOIN_TICKET_SECRET: dev-only-secret-change-me     # same as api (verify-only)
       INTERNAL_API_TOKEN: dev-internal-token-change-me  # same as api; submits results (§8.1)
       API_URL: http://api:8080          # game submits results here — game holds NO DB creds
+      MATCH_DURATION_MS: "${MATCH_DURATION_MS:-20000}"  # dev/CI short; prod 300000 (§21.7)
     ports: ["2567:2567"]
     depends_on:
       redis: { condition: service_healthy }
       api: { condition: service_started }
 
   bots:                                  # internal headless players (load test / practice) — opt-in
-    build: ../services/bots
+    build:
+      context: ..
+      dockerfile: services/bots/Dockerfile
     profiles: ["bots"]
     environment:
       GAME_WS_URL: ws://game:2567

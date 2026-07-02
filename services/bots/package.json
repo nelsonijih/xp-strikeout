@@ -1,0 +1,17 @@
+{
+  "name": "@xp/bots",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "colyseus.js": "^0.15.26"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}
